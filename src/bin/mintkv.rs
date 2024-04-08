@@ -1,9 +1,3 @@
-# mintkv
-A simple KV database in rust is based on btree, written as a learning project.
-
-
-# Example
-```rust
 use mintkv::Mintkv;
 use std::fs;
 
@@ -48,5 +42,3 @@ fn main() {
     }
     _ = fs::remove_file(DEFAULT_DATABASE);
 }
-
-```
