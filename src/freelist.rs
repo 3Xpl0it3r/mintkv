@@ -14,8 +14,9 @@ impl Freelist {
         })
     }
 
-    pub fn release_page(&mut self, page_number: u64) {
-        self.released_pages.push(page_number)
+    pub fn release_page(&mut self, _page_number: u64) {
+        // todo 可能需要多个页面来存放released page
+        /* self.released_pages.push(page_number) */
     }
 
     pub fn serialize(&self, buffer: &mut [u8]) {

@@ -1,4 +1,5 @@
 rm test.db
 rm -rf target
-RUST_BACKTRACE=1 cargo run --bin mintkv 
-hexdump -C test.db
+cargo build
+time RUST_BACKTRACE=1 ./target/debug/mintkv
+# hexdump -C test.db

@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::ops::DerefMut;
 use std::rc::Rc;
 use std::usize;
 
@@ -9,7 +8,7 @@ use crate::constant::{DEFAULT_META_PN, DEFAULT_PAGE_SIZE};
 use crate::error::Error;
 use crate::freelist::Freelist;
 use crate::meta::Meta;
-use crate::node::{self, Item, Node};
+use crate::node::{KeyValue, Node, TypedNode};
 use crate::pager::Pager;
 
 pub struct BTree {
@@ -61,99 +60,110 @@ impl BTree {
         if self.metadata.root == 0 {
             return;
         }
+
         let mut queue = vec![self.metadata.root];
         let mut hight = 0;
         while !queue.is_empty() {
             hight += 1;
-            if hight > 4 {
-                return;
-            }
             println!("High-{}", hight);
             let count = queue.len();
             for _ in 0..count {
                 let node_ptr = queue.remove(0);
-                let node = self.get_node(node_ptr).unwrap();
+                let mut node = self.get_node(node_ptr).unwrap();
                 node.display();
-                if node.children.is_empty() {
-                    continue;
+                if !node.is_leaf {
+                    queue.extend(&node.internal_data().children);
                 }
-                queue.extend(node.children);
             }
         }
     }
 
     pub fn insert(&mut self, key: &str, value: &str) {
-        let item = Item::new(key.as_bytes().into(), value.as_bytes().into());
+        let kv = KeyValue::new(key.into(), value.into());
         if self.metadata.root == 0 {
             let mut node_page = self.pager.allocate_page(self.freelist.get_next_page());
-            let mut new_node = Node::new_empty_node(node_page.page_number);
-            new_node.items.push(item);
+            let mut new_node = Node::new_leaf(node_page.page_number);
+            if let TypedNode::Leaf(ref mut leaf) = new_node.data {
+                leaf.keyvalues.push(kv);
+                leaf.prev_offset = node_page.page_number;
+            }
             new_node.serialize(&mut node_page.data);
 
             self.write_node(&mut new_node);
-            self.metadata.root = new_node.page_number;
+            self.metadata.root = new_node.offset;
             return;
         }
 
-        let mut parent_indices = vec![0];
+        let mut ancestor_idx = vec![0];
         let (mut node, index, found) = self
-            .find_node(self.metadata.root, key, &mut parent_indices)
+            .find_node(self.metadata.root, key, &mut ancestor_idx)
             .unwrap();
 
-        if found {
-            node.items[index] = item;
-        } else {
-            node.items.insert(index, item);
+        // node must be leaf node
+        if let TypedNode::Leaf(ref mut leaf_node) = node.data {
+            if found {
+                // directory update
+                leaf_node.keyvalues[index].value = value.to_string();
+            } else {
+                leaf_node
+                    .keyvalues
+                    .insert(index, KeyValue::new(key.to_string(), value.to_string()));
+            }
         }
 
-        let mut ancestors = self.get_nodes(&parent_indices);
-        if ancestors.len() > 1 {
-            // for last modified node has not persistent into disk;
-            let last = ancestors.len() - 1;
-            ancestors.remove(last);
-        }
-        if node.page_number == self.metadata.root {
+        let mut ancestors = self.get_nodes(&ancestor_idx);
+
+        if node.offset == self.metadata.root {
             ancestors[0] = Rc::new(RefCell::new(node));
-        } else if node.is_overflow() {
-            ancestors.push(Rc::new(RefCell::new(node)));
         } else {
-            self.write_node(&mut node);
+            ancestors.push(Rc::new(RefCell::new(node)));
         }
 
         for i in (0..ancestors.len() - 1).rev() {
             let parent = ancestors[i].clone();
             let child = ancestors[i + 1].clone();
-            let child_index = parent_indices[i + 1];
+            let child_index = ancestor_idx[i + 1];
             if child.borrow().is_overflow() {
-                let (middile_item, mut sibling) = child.borrow_mut().split().unwrap();
-                sibling.page_number = self.freelist.get_next_page();
-                parent.borrow_mut().items.insert(child_index, middile_item);
+                let (mid, mut sibling) = child
+                    .borrow_mut()
+                    .split(self.freelist.get_next_page())
+                    .unwrap();
                 parent
                     .borrow_mut()
+                    .internal_data()
+                    .keys
+                    .insert(child_index, mid);
+                parent
+                    .borrow_mut()
+                    .internal_data()
                     .children
-                    .insert(child_index + 1, sibling.page_number);
-                self.write_node(&mut child.borrow_mut());
-                self.write_node(&mut sibling);
+                    .insert(child_index + 1, sibling.offset);
+
+                self.write_nodes(&mut [&mut child.borrow_mut(), &mut sibling]);
             } else {
                 self.write_node(&mut child.borrow_mut());
             }
         }
 
         let root_node = ancestors[0].clone();
-
         if root_node.borrow().is_overflow() {
-            let mut new_root = Node::default();
-            let (middle_item, mut sibling) = root_node.borrow_mut().split().unwrap();
-            sibling.page_number = self.freelist.get_next_page();
-            new_root.items.push(middle_item);
-            new_root.children.push(root_node.borrow().page_number);
-            new_root.children.push(sibling.page_number);
-            self.write_nodes(
-                vec![&mut new_root, &mut root_node.borrow_mut(), &mut sibling].deref_mut(),
-            );
-            self.metadata.root = new_root.page_number;
+            let mut new_root = Node::new_internal(self.freelist.get_next_page());
+            let (middle_item, mut sibling) = root_node
+                .borrow_mut()
+                .split(self.freelist.get_next_page())
+                .unwrap();
+
+            new_root.internal_data().keys.push(middle_item);
+            new_root
+                .internal_data()
+                .children
+                .push(root_node.borrow().offset);
+            new_root.internal_data().children.push(sibling.offset);
+            self.metadata.root = new_root.offset;
+
+            self.write_nodes(&mut [&mut new_root, &mut root_node.borrow_mut(), &mut sibling]);
         } else {
-            self.write_node(&mut root_node.borrow_mut())
+            self.write_node(&mut root_node.borrow_mut());
         }
     }
 
@@ -168,87 +178,218 @@ impl BTree {
         if !found {
             return Err(Error::KeyNotFound);
         }
-        let removed_value = removed_node.items[removed_index].clone();
+        let removed_item = removed_node.leaf_data().keyvalues.remove(removed_index);
+        // removed_node must be leaf node
 
-        if removed_node.is_leaf() == 1 {
-            removed_node.items.remove(removed_index);
-            self.write_node(&mut removed_node);
-        } else {
-            let mut affected = self.remove_from_internal_node(&mut removed_node, removed_index);
-            ancestor_idx.append(&mut affected);
+        if !found {
+            return Err(Error::KeyNotFound);
         }
-        let ancestors = self.get_nodes(&ancestor_idx);
+
+        let mut ancestors = self.get_nodes(&ancestor_idx);
+        if removed_node.offset == self.metadata.root {
+            ancestors[0] = Rc::new(RefCell::new(removed_node));
+        } else {
+            ancestors.push(Rc::new(RefCell::new(removed_node)));
+        }
+
         for i in (0..ancestors.len() - 1).rev() {
             let parent = ancestors[i].clone();
             let child = ancestors[i + 1].clone();
             let child_index = ancestor_idx[i + 1];
             if child.borrow().is_underflow() {
-                self.reblance(
-                    &mut parent.borrow_mut(),
-                    &mut child.borrow_mut(),
-                    child_index,
-                )
+                if child.borrow().is_leaf {
+                    self.redistribution_leaf(
+                        &mut parent.borrow_mut(),
+                        &mut child.borrow_mut(),
+                        child_index,
+                    );
+                } else {
+                    self.redistribution_internal(
+                        &mut parent.borrow_mut(),
+                        &mut child.borrow_mut(),
+                        child_index,
+                    );
+                }
             } else {
                 self.write_node(&mut child.borrow_mut());
             }
         }
 
         let root_node = ancestors.first().unwrap();
-        if root_node.borrow_mut().items.is_empty() && !root_node.borrow_mut().children.is_empty() {
-            self.metadata.root = root_node.borrow_mut().children[0];
-            self.delete_node(root_node.borrow().page_number);
+        if root_node.borrow().is_leaf {
+            // leaf node
+            self.write_node(&mut root_node.borrow_mut());
+            return Ok(removed_item.key.clone());
+        }
+
+        if root_node.borrow_mut().internal_data().keys.is_empty()
+            && root_node.borrow_mut().internal_data().children.len() == 1
+        {
+            self.metadata.root = root_node
+                .borrow_mut()
+                .internal_data()
+                .children
+                .pop()
+                .unwrap();
+            self.delete_node(root_node.borrow().offset);
         } else {
             self.write_node(&mut root_node.borrow_mut());
         }
 
-        Ok(String::from_utf8(removed_value.value).unwrap())
+        Ok(removed_item.key.clone())
     }
 
-    fn reblance(
+    // leaf node is underflow, then do re-distribution
+    // adopt data from it's neighbor ; then update the parent
+    fn redistribution_leaf(
         &mut self,
         parent_node: &mut Node,
         deficient_node: &mut Node,
-        deficient_index: usize,
+        deficient_indx: usize,
     ) {
-        if deficient_index > 0 {
+        if deficient_indx > 0 {
             // if deficient node's left sibling exists and has more than minimum number of
             // elements, then rotate right
             let mut l_sibling = self
-                .get_node(parent_node.children[deficient_index - 1])
+                .get_node(parent_node.internal_data().children[deficient_indx - 1])
                 .unwrap();
             if l_sibling.can_spare_element() {
-                let separator_item = parent_node.items.remove(deficient_index - 1);
-                deficient_node.items.insert(0, separator_item);
+                // adopt item from left sibling node
+                let l_item = l_sibling.leaf_data().keyvalues.pop().unwrap();
 
-                let left_item = l_sibling.items.pop().unwrap();
-                parent_node.items.insert(deficient_index - 1, left_item);
-                if l_sibling.is_leaf() == 0 {
-                    let child = l_sibling.children.pop().unwrap();
-                    deficient_node.children.insert(0, child);
-                }
+                deficient_node.leaf_data().keyvalues.insert(0, l_item);
+
+                // update parent node;
+                let new_sep = l_sibling.leaf_data().keyvalues.last().unwrap().key.clone();
+                parent_node.internal_data().keys[deficient_indx - 1] = new_sep;
+
+                // persistent nodes
                 self.write_node(&mut l_sibling);
                 self.write_node(deficient_node);
                 return;
             }
         }
 
-        if deficient_index < parent_node.children.len() - 1 {
+        if deficient_indx < parent_node.internal_data().keys.len() - 1 {
+            // if deficient node's right sibling exists and has more than minimum number of
+            // elements, then rotate left
+            let mut r_sibling = self
+                .get_node(parent_node.internal_data().children[deficient_indx + 1])
+                .unwrap();
+            if r_sibling.can_spare_element() {
+                // adopt item from right sibling node
+                let r_item = r_sibling.leaf_data().keyvalues.remove(0);
+
+                deficient_node.leaf_data().keyvalues.push(r_item);
+                // update parent node
+                let new_sep = r_sibling.leaf_data().keyvalues.first().unwrap().key.clone();
+                parent_node.internal_data().keys[deficient_indx] = new_sep;
+
+                // persistent nodes
+                self.write_node(&mut r_sibling);
+                self.write_node(deficient_node);
+                return;
+            }
+        }
+        // delete the node and merge with neighbor
+        if deficient_indx == 0 {
+            if let Some(mut r_sibling) = self.get_node(parent_node.internal_data().children[1]) {
+                // merge with negihbor
+                deficient_node
+                    .leaf_data()
+                    .keyvalues
+                    .append(&mut r_sibling.leaf_data().keyvalues);
+                // delete node
+                parent_node.internal_data().keys.remove(deficient_indx);
+                parent_node
+                    .internal_data()
+                    .children
+                    .remove(deficient_indx + 1);
+
+                deficient_node.leaf_data().next_offset = r_sibling.leaf_data().next_offset;
+
+                self.write_node(deficient_node);
+                self.delete_node(r_sibling.offset);
+            }
+        } else {
+            let mut l_sibling = self
+                .get_node(parent_node.internal_data().children[deficient_indx - 1])
+                .unwrap();
+            l_sibling
+                .leaf_data()
+                .keyvalues
+                .append(&mut deficient_node.leaf_data().keyvalues);
+            // delete node
+            parent_node.internal_data().keys.remove(deficient_indx - 1);
+            parent_node.internal_data().children.remove(deficient_indx);
+
+            l_sibling.leaf_data().next_offset = deficient_node.leaf_data().next_offset;
+
+            self.write_node(&mut l_sibling);
+            self.delete_node(deficient_node.offset);
+        }
+    }
+    // redistribution internal ,
+    // if an internal node ends up with a fewer nodes, underflow
+    // adopt from a neighbor ; then update parent
+    // if adopt doesn't work, then merge
+    fn redistribution_internal(
+        &mut self,
+        parent_node: &mut Node,
+        deficient_node: &mut Node,
+        deficient_idx: usize,
+    ) {
+        // try to rotate from left sibling
+        if deficient_idx > 0 {
+            // if deficient node's left sibling exists and has more than minimum number of
+            // elements, then rotate right
+            let mut l_sibling = self
+                .get_node(parent_node.internal_data().children[deficient_idx - 1])
+                .unwrap();
+            if l_sibling.can_spare_element() {
+                let old_sep = parent_node.internal_data().keys.remove(deficient_idx - 1);
+                let leftest_child = l_sibling.internal_data().children.pop().unwrap();
+
+                deficient_node.internal_data().keys.insert(0, old_sep);
+                deficient_node
+                    .internal_data()
+                    .children
+                    .insert(0, leftest_child);
+
+                let new_sep = l_sibling.internal_data().keys.pop().unwrap();
+
+                parent_node
+                    .internal_data()
+                    .keys
+                    .insert(deficient_idx - 1, new_sep);
+
+                self.write_node(&mut l_sibling);
+                self.write_node(deficient_node);
+                return;
+            }
+        }
+
+        // try roate from right sibling
+        if deficient_idx < parent_node.internal_data().keys.len() - 1 {
             // borrow from right
             // if deficient node's right sibling exists and has more than minimum number of
             // elements, then rotate left
             let mut r_sibling = self
-                .get_node(parent_node.children[deficient_index + 1])
+                .get_node(parent_node.internal_data().children[deficient_idx + 1])
                 .unwrap();
             if r_sibling.can_spare_element() {
-                let separator_item = parent_node.items.remove(deficient_index);
-                deficient_node.items.push(separator_item);
+                let old_sep = parent_node.internal_data().keys.remove(deficient_idx);
 
-                let right_item = r_sibling.items.remove(0);
-                parent_node.items.insert(deficient_index, right_item);
-                if r_sibling.is_leaf() == 0 {
-                    let child = r_sibling.children.remove(0);
-                    deficient_node.children.push(child);
-                }
+                let r_first_item = r_sibling.internal_data().keys.remove(0);
+                let ship_child = r_sibling.internal_data().children.remove(0);
+
+                parent_node
+                    .internal_data()
+                    .keys
+                    .insert(deficient_idx, r_first_item);
+
+                deficient_node.internal_data().keys.push(old_sep);
+                deficient_node.internal_data().children.push(ship_child);
 
                 self.write_node(&mut r_sibling);
                 self.write_node(deficient_node);
@@ -256,58 +397,54 @@ impl BTree {
             }
         }
         // immediate sibling have only the minimum number of elements, then merge with a sibling
-        // sandwiching their seperator take off from their parents
-        if deficient_index == 0 {
-            if let Some(mut r_sibling) = self.get_node(parent_node.children[1]) {
-                let separator = parent_node.items.remove(0);
-                deficient_node.items.push(separator);
-                deficient_node.items.append(&mut r_sibling.items);
-                if r_sibling.is_leaf() == 0 {
-                    deficient_node.children.append(&mut r_sibling.children);
-                }
-                parent_node.children.remove(1);
+        // sandwiching their separator take off from their parents
+        if deficient_idx == 0 {
+            if let Some(mut r_sibling) = self.get_node(parent_node.internal_data().children[1]) {
+                let old_sep = parent_node.internal_data().keys.remove(deficient_idx);
+
+                deficient_node.internal_data().keys.push(old_sep);
+                deficient_node
+                    .internal_data()
+                    .keys
+                    .append(&mut r_sibling.internal_data().keys);
+                deficient_node
+                    .internal_data()
+                    .children
+                    .append(&mut r_sibling.internal_data().children);
+
+                parent_node
+                    .internal_data()
+                    .children
+                    .remove(deficient_idx + 1);
+
                 self.write_node(deficient_node);
-                self.delete_node(r_sibling.page_number);
+                self.delete_node(r_sibling.offset);
             }
         } else {
             let mut l_sibling = self
-                .get_node(parent_node.children[deficient_index - 1])
+                .get_node(parent_node.internal_data().children[deficient_idx - 1])
                 .unwrap();
-            let separator_item = parent_node.items.remove(deficient_index - 1);
-            l_sibling.items.push(separator_item);
-            l_sibling.items.append(&mut deficient_node.items);
-            if deficient_node.is_leaf() == 0 {
-                l_sibling.children.append(&mut deficient_node.children);
-            }
-            parent_node.children.remove(deficient_index);
+            let old_sep = parent_node.internal_data().keys.remove(deficient_idx - 1);
+            l_sibling.internal_data().keys.push(old_sep);
+
+            l_sibling
+                .internal_data()
+                .keys
+                .append(&mut deficient_node.internal_data().keys);
+            l_sibling
+                .internal_data()
+                .children
+                .append(&mut deficient_node.internal_data().children);
+
+            parent_node.internal_data().children.remove(deficient_idx);
+
             self.write_node(&mut l_sibling);
-            self.delete_node(deficient_node.page_number);
+            self.delete_node(deficient_node.offset);
         }
-    }
-
-    fn remove_from_internal_node(&mut self, node: &mut Node, removed_index: usize) -> Vec<usize> {
-        let mut affected_nodes = vec![removed_index];
-
-        // get the largest node in left child
-        let mut child_offset = node.children[removed_index];
-        let mut child_node: Node;
-        loop {
-            child_node = self.get_node(child_offset).unwrap();
-            if child_node.is_leaf() == 1 {
-                break;
-            }
-            let travel_index = child_node.children.len() - 1;
-            child_offset = child_node.children[travel_index];
-            affected_nodes.push(travel_index);
-        }
-        let new_seperator_item = child_node.items.pop().unwrap();
-        node.items[removed_index] = new_seperator_item;
-        self.write_node(node);
-        self.write_node(&mut child_node);
-        affected_nodes
     }
 
     fn get_nodes(&self, indexes: &[usize]) -> Vec<Rc<RefCell<Node>>> {
+        // return all internalnode
         let mut nodes = vec![];
         let root = self.get_node(self.metadata.root).unwrap();
         nodes.push(Rc::new(RefCell::new(root)));
@@ -315,8 +452,9 @@ impl BTree {
             return nodes;
         }
 
-        for i in 1..indexes.len() {
-            let child_offset = nodes[i - 1].clone().borrow().children[indexes[i]];
+        for i in 1..indexes.len() - 1 {
+            let child_offset =
+                nodes[i - 1].clone().borrow_mut().internal_data().children[indexes[i]];
             let child_node = self.get_node(child_offset).unwrap();
             nodes.push(Rc::new(RefCell::new(child_node)));
         }
@@ -324,7 +462,7 @@ impl BTree {
         nodes
     }
 
-    pub fn find(&self, key: &str) -> Result<Item, Error> {
+    pub fn find(&self, key: &str) -> Result<KeyValue, Error> {
         if self.metadata.root == 0 {
             return Err(Error::EmptyTree);
         }
@@ -332,7 +470,9 @@ impl BTree {
         let mut ancestors = vec![];
         if let Ok((node, index, found)) = self.find_node(self.metadata.root, key, &mut ancestors) {
             if found {
-                return Ok(node.items[index].clone());
+                if let TypedNode::Leaf(ref leaf_node) = node.data {
+                    return Ok(leaf_node.keyvalues[index].clone());
+                }
             }
         }
         Err(Error::KeyNotFound)
@@ -350,22 +490,21 @@ impl BTree {
             return Err(Error::PageLoadErr);
         };
 
-        let (found, index) = node.find_key(key);
-        if node.is_leaf() == 1 || found {
-            // node.item[index-1] < key < node.item[index]
-            return Ok((node, index, found));
+        if node.is_leaf {
+            let (found, index) = node.find_key_in_leaf(key);
+            Ok((node, index, found))
+        } else {
+            let (idx, child) = node.find_key_in_internal(key);
+            ancestors.push(idx);
+            self.find_node(child, key, ancestors)
         }
-
-        // node.
-        ancestors.push(index);
-        self.find_node(node.children[index], key.clone(), ancestors)
     }
 
     fn get_node(&self, page_number: u64) -> Option<Node> {
-        let mut node = Node::default();
+        let mut node = Node::new_empty(page_number);
         let node_page = self.pager.read_page(page_number).unwrap();
         node.deserialize(&node_page.data);
-        node.page_number = page_number;
+        node.offset = page_number;
         Some(node)
     }
 
@@ -376,10 +515,10 @@ impl BTree {
     }
 
     pub fn write_node(&mut self, node: &mut Node) {
-        if node.page_number == 0 {
-            node.page_number = self.freelist.get_next_page();
+        if node.offset == 0 {
+            node.offset = self.freelist.get_next_page();
         }
-        let mut page = self.pager.allocate_page(node.page_number);
+        let mut page = self.pager.allocate_page(node.offset);
 
         node.serialize(&mut page.data);
         self.pager.write_page(&page);
