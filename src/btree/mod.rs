@@ -1,15 +1,22 @@
+mod constant;
+mod error;
+mod freelist;
+mod meta;
+mod node;
+mod pager;
+
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::rc::Rc;
 use std::usize;
 
-use crate::constant::{DEFAULT_META_PN, DEFAULT_PAGE_SIZE};
-use crate::error::Error;
-use crate::freelist::Freelist;
-use crate::meta::Meta;
-use crate::node::{KeyValue, Node, TypedNode};
-use crate::pager::Pager;
+use constant::{DEFAULT_META_PN, DEFAULT_PAGE_SIZE};
+use error::Error;
+use freelist::Freelist;
+use meta::Meta;
+use node::{KeyValue, Node, TypedNode};
+use pager::Pager;
 
 pub struct BTree {
     pub pager: Rc<Pager>,
@@ -78,8 +85,8 @@ impl BTree {
         }
     }
 
-    pub fn insert(&mut self, key: &str, value: &str) {
-        let kv = KeyValue::new(key.into(), value.into());
+    pub fn insert(&mut self, key: &[u8], value: &[u8]) {
+        let kv = KeyValue::new(key, value);
         if self.metadata.root == 0 {
             let mut node_page = self.pager.allocate_page(self.freelist.get_next_page());
             let mut new_node = Node::new_leaf(node_page.page_number);
@@ -103,11 +110,9 @@ impl BTree {
         if let TypedNode::Leaf(ref mut leaf_node) = node.data {
             if found {
                 // directory update
-                leaf_node.keyvalues[index].value = value.to_string();
+                leaf_node.keyvalues[index].value = value.into();
             } else {
-                leaf_node
-                    .keyvalues
-                    .insert(index, KeyValue::new(key.to_string(), value.to_string()));
+                leaf_node.keyvalues.insert(index, KeyValue::new(key, value));
             }
         }
 
@@ -167,7 +172,7 @@ impl BTree {
         }
     }
 
-    pub fn delete(&mut self, key: &str) -> Result<String, Error> {
+    pub fn delete(&mut self, key: &[u8]) -> Result<String, Error> {
         if self.metadata.root == 0 {
             return Err(Error::EmptyTree);
         }
@@ -219,7 +224,7 @@ impl BTree {
         if root_node.borrow().is_leaf {
             // leaf node
             self.write_node(&mut root_node.borrow_mut());
-            return Ok(removed_item.key.clone());
+            return Ok(String::from_utf8(removed_item.key).unwrap());
         }
 
         if root_node.borrow_mut().internal_data().keys.is_empty()
@@ -236,7 +241,7 @@ impl BTree {
             self.write_node(&mut root_node.borrow_mut());
         }
 
-        Ok(removed_item.key.clone())
+        Ok(String::from_utf8(removed_item.key).unwrap())
     }
 
     // leaf node is underflow, then do re-distribution
@@ -462,7 +467,7 @@ impl BTree {
         nodes
     }
 
-    pub fn find(&self, key: &str) -> Result<KeyValue, Error> {
+    pub fn find(&self, key: &[u8]) -> Result<KeyValue, Error> {
         if self.metadata.root == 0 {
             return Err(Error::EmptyTree);
         }
@@ -481,7 +486,7 @@ impl BTree {
     fn find_node(
         &self,
         node_offset: u64,
-        key: &str,
+        key: &[u8],
         ancestors: &mut Vec<usize>,
     ) -> Result<(Node, usize, bool), Error> {
         let node: Node = if let Some(node) = self.get_node(node_offset) {

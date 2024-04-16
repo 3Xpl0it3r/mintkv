@@ -1,0 +1,195 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::usize;
+
+use crate::bytes;
+use crate::errors::Error;
+
+const MAX_SKIP_HEIGH: usize = 5;
+
+// SkipList[#TODO] (shoule add some comments )
+#[derive(Debug)]
+pub(super) struct SkipList {
+    head: SkipNode,
+    height: i32,
+}
+
+// Default[#TODO] (should add some comments)
+impl Default for SkipList {
+    fn default() -> Self {
+        SkipList {
+            head: SkipNode::default(),
+            height: 1,
+        }
+    }
+}
+
+pub type SkipNode = Rc<RefCell<Node>>;
+const EMPTY_NODE: Option<Rc<RefCell<Node>>> = None;
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Node {
+    key: Vec<u8>,
+    value: Vec<u8>,
+    next_nodes: [Option<Rc<RefCell<Node>>>; MAX_SKIP_HEIGH],
+}
+
+fn get_random_height() -> i32 {
+    5
+}
+
+// SkipList[#TODO] (should add some comments)
+impl SkipList {
+    pub(super) fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let (mut travels, maybe_found) = self.search(key);
+        if maybe_found.is_some() {
+            return Err(Error::KeyExists);
+        }
+
+        let height = get_random_height();
+        let new_node = Rc::new(RefCell::new(Node {
+            key: key.into(),
+            value: value.into(),
+            next_nodes: [EMPTY_NODE; MAX_SKIP_HEIGH],
+        }));
+
+        for level in 0..height {
+            let prev_node: SkipNode;
+            if let Some(node) = travels[level as usize].take() {
+                prev_node = node;
+            } else {
+                prev_node = self.head.clone();
+            }
+            new_node.borrow_mut().next_nodes[level as usize] =
+                prev_node.borrow_mut().next_nodes[level as usize].take();
+            prev_node.borrow_mut().next_nodes[level as usize] = Some(new_node.clone());
+        }
+
+        if height > self.height {
+            self.height = height;
+        }
+        Ok(())
+    }
+
+    pub(super) fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
+        let (mut travels, may_found) = self.search(key);
+        if may_found.is_none() {
+            return Err(Error::KeyNotFound);
+        }
+
+        for level in 0..self.height {
+            let prev_node = travels[level as usize].take().unwrap();
+            let may_del = prev_node.borrow().next_nodes[level as usize].clone();
+            if may_del.is_none() {
+                continue;
+            }
+            let del_node = may_del.unwrap();
+            if del_node.borrow().key == key {
+                prev_node.borrow_mut().next_nodes[level as usize] =
+                    del_node.borrow_mut().next_nodes[level as usize].take();
+            }
+        }
+
+        // resize the height
+        for level in (0..self.height).rev() {
+            if self.head.borrow().next_nodes[level as usize].is_none() {
+                self.height -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn get(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
+        let (_, may_found) = self.search(key);
+        match may_found {
+            Some(found) => Ok(found.borrow().key.clone()),
+            None => Err(Error::KeyNotFound),
+        }
+    }
+
+    fn search(&self, key: &[u8]) -> ([Option<SkipNode>; MAX_SKIP_HEIGH], Option<SkipNode>) {
+        let mut travels = [EMPTY_NODE; MAX_SKIP_HEIGH];
+        let mut prev_node: SkipNode = self.head.clone();
+        let mut next: Option<SkipNode> = None;
+        for level in (0..self.height).rev() {
+            loop {
+                let may_next = prev_node.borrow().next_nodes[level as usize].clone();
+                if let Some(node) = may_next.as_ref() {
+                    match bytes::compare(&node.borrow().key, key) {
+                        std::cmp::Ordering::Less => break,
+                        std::cmp::Ordering::Equal => {
+                            next = Some(node.clone());
+                            break;
+                        }
+                        std::cmp::Ordering::Greater => prev_node = node.clone(),
+                    }
+                } else {
+                    break;
+                }
+            }
+            travels[level as usize] = Some(prev_node.clone());
+        }
+        if let Some(node) = next.as_ref() {
+            if bytes::compare(&node.borrow().key, key) == std::cmp::Ordering::Equal {
+                return (travels, Some(node.clone()));
+            }
+        }
+        (travels, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert() {
+        let mut skip_list = SkipList::default();
+        assert_eq!(
+            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
+            Ok(())
+        );
+        assert_eq!(
+            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
+            Ok(())
+        );
+        assert_eq!(
+            skip_list.insert("key1".as_bytes(), "value3".as_bytes()),
+            Err(Error::KeyExists)
+        );
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut skip_list = SkipList::default();
+        assert_eq!(
+            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
+            Ok(())
+        );
+        assert_eq!(
+            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
+            Ok(())
+        );
+        assert_eq!(skip_list.delete("key2".as_bytes()), Ok(()));
+        assert_eq!(skip_list.delete("key2".as_bytes()), Err(Error::KeyNotFound));
+        assert_eq!(skip_list.delete("key3".as_bytes()), Err(Error::KeyNotFound));
+    }
+
+    #[test]
+    fn test_search() {
+        let mut skip_list = SkipList::default();
+        assert_eq!(
+            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
+            Ok(())
+        );
+        assert_eq!(
+            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
+            Ok(())
+        );
+        let (_, maybe_found) = skip_list.search("key2".as_bytes());
+        assert_eq!(maybe_found.is_some(), true);
+        assert_eq!(maybe_found.unwrap().borrow().value, "value2".as_bytes());
+        let (_, maybe_not_found) = skip_list.search("key3".as_bytes());
+        assert_eq!(maybe_not_found.is_none(), true);
+    }
+}

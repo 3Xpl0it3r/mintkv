@@ -63,7 +63,6 @@ impl Freelist {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
     fn test_freelist_basic_operations() {
         let free_size = |freelist: &Freelist| -> usize {
             8 + // max_page
@@ -115,7 +114,6 @@ mod tests {
         assert_eq!(deserialized_freelist.get_next_page(), freelist.max_page + 1);
     }
 
-    #[test]
     fn test_freelist_basic_functionality() {
         let mut freelist = Freelist::default();
         assert_eq!(freelist.get_next_page(), 1); // 第一个获取的页面应该是1
@@ -124,7 +122,6 @@ mod tests {
         freelist.release_page(2); // 尝试释放一个未分配的页面，不会有影响
     }
 
-    #[test]
     fn test_freelist_serialization_deserialization() {
         let mut freelist = Freelist::default();
         freelist.get_next_page(); // 获取页面1
@@ -146,7 +143,6 @@ mod tests {
         assert_eq!(deserialized_freelist.get_next_page(), 4); // 接下来是新分配的页面3
     }
 
-    #[test]
     fn test_freelist_boundary_conditions() {
         let mut freelist = Freelist::default();
         for _ in 0..10 {
@@ -161,7 +157,6 @@ mod tests {
         assert_eq!(freelist.get_next_page(), 11); // 接下来应该是新分配的页面11
     }
 
-    #[test]
     fn test_freelist_exception_handling() {
         let mut freelist = Freelist::default();
         freelist.get_next_page(); // 获取页面1

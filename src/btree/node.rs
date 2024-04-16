@@ -1,14 +1,16 @@
 use core::panic;
 use std::usize;
 
-use crate::constant::{
+use crate::bytes;
+
+use super::constant::{
     DEFAULT_MAX_THRESHOLD, DEFAULT_MIN_THRESHOLD, HEAD_INTERNAL_NODE_SIZE, HEAD_LEAF_NODE_SIZE,
 };
-use crate::error::Error;
+use super::error::Error;
 
 type Offset = u64;
-type Key = String;
-type Value = String;
+type Key = Vec<u8>;
+type Value = Vec<u8>;
 
 #[derive(Default, Clone, Debug)]
 pub struct KeyValue {
@@ -18,8 +20,11 @@ pub struct KeyValue {
 
 // KeyValue[#TODO] (should add some comments)
 impl KeyValue {
-    pub fn new(key: String, value: String) -> Self {
-        Self { key, value }
+    pub fn new(key: &[u8], value: &[u8]) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
     }
 }
 
@@ -101,11 +106,11 @@ impl Node {
                 );
             }
             TypedNode::Leaf(ref leaf_node) => {
-                let mut keys = vec![];
+                /* let mut keys = vec![];
                 for kv in leaf_node.keyvalues.iter() {
                     keys.push(kv.key.to_string());
                 }
-                println!("LN:{}, Keys: {:?}", self.offset, keys);
+                println!("LN:{}, Keys: {:?}", self.offset, keys); */
             }
             TypedNode::Empty => todo!(),
         }
@@ -145,11 +150,11 @@ impl Node {
         // write keys into page
         for key in internal_node.keys.iter() {
             // write the length of keys into page , which cost 2B
-            let key_size = key.as_bytes().len();
+            let key_size = key.len();
             buf[offset..offset + 2].clone_from_slice(u16::to_le_bytes(key_size as u16).as_ref());
             offset += 2;
             // write key into page, which cost key_size
-            buf[offset..offset + key_size].clone_from_slice(key.as_bytes());
+            buf[offset..offset + key_size].clone_from_slice(key);
             offset += key_size;
         }
 
@@ -187,21 +192,21 @@ impl Node {
         // write key value into page
         for kv in leaf_node.keyvalues.iter() {
             // write key size into page,which cost 2B
-            let key_size = kv.key.as_bytes().len();
+            let key_size = kv.key.len();
             buf[offset..offset + 2].clone_from_slice(u16::to_le_bytes(key_size as u16).as_ref());
             offset += 2;
 
             // write key into page
-            buf[offset..offset + key_size].clone_from_slice(kv.key.as_bytes());
+            buf[offset..offset + key_size].clone_from_slice(kv.key.as_ref());
             offset += key_size;
 
             // write value size into page, which cost 2B
-            let value_size = kv.value.as_bytes().len();
+            let value_size = kv.value.len();
             buf[offset..offset + 2].clone_from_slice(u16::to_le_bytes(value_size as u16).as_ref());
             offset += 2;
 
             // write value bytes into page, which cost value_size * B
-            buf[offset..offset + value_size].clone_from_slice(kv.value.as_bytes());
+            buf[offset..offset + value_size].clone_from_slice(kv.value.as_ref());
             offset += value_size;
         }
     }
@@ -236,7 +241,7 @@ impl Node {
             key_bytes.clone_from_slice(buf[offset..offset + key_size].into());
             offset += key_size;
 
-            keys.push(String::from_utf8(key_bytes).unwrap());
+            keys.push(key_bytes);
         }
         // get children
         let mut children = vec![];
@@ -290,11 +295,9 @@ impl Node {
             value_bytes.clone_from_slice(buf[offset..offset + val_size].try_into().unwrap());
             offset += val_size;
 
-            let key_str = String::from_utf8(key_bytes).unwrap();
-            let val_str = String::from_utf8(value_bytes).unwrap();
             key_values.push(KeyValue {
-                key: key_str,
-                value: val_str,
+                key: key_bytes,
+                value: value_bytes,
             });
         }
         self.data = TypedNode::Leaf(LeafNode {
@@ -355,10 +358,10 @@ impl Node {
         }
     }
 
-    pub fn find_key_in_leaf(&self, key: &str) -> (bool, usize) {
+    pub fn find_key_in_leaf(&self, key: &[u8]) -> (bool, usize) {
         if let TypedNode::Leaf(ref leaf_node) = self.data {
             for (idx, elem) in leaf_node.keyvalues.iter().enumerate() {
-                match elem.key.as_str().cmp(key) {
+                match bytes::compare(&elem.key, key) {
                     std::cmp::Ordering::Equal => {
                         return (true, idx);
                     }
@@ -374,10 +377,11 @@ impl Node {
         }
     }
 
-    pub fn find_key_in_internal(&self, key: &str) -> (usize, Offset) {
+    pub fn find_key_in_internal(&self, key: &[u8]) -> (usize, Offset) {
         if let TypedNode::Internal(ref internal_node) = self.data {
             for (idx, elem) in internal_node.keys.iter().enumerate() {
-                match elem.as_str().cmp(key) {
+                /* match elem.as_str().cmp(key) { */
+                match bytes::compare(&elem, key) {
                     std::cmp::Ordering::Equal => {
                         return (idx + 1, internal_node.children[idx + 1]);
                     }
@@ -401,7 +405,7 @@ impl Node {
             TypedNode::Internal(ref internal_node) => {
                 let mut threshold_value = HEAD_INTERNAL_NODE_SIZE;
                 for idx in 0..internal_node.keys.len() {
-                    threshold_value += internal_node.keys[idx].as_bytes().len() + 2 + 8;
+                    threshold_value += internal_node.keys[idx].len() + 2 + 8;
                     if threshold_value > DEFAULT_MIN_THRESHOLD as usize {
                         return idx as i32;
                     }
@@ -412,7 +416,7 @@ impl Node {
                 // 8B for the last child
                 let mut threshold_value = HEAD_LEAF_NODE_SIZE + 8;
                 for (idx, kv) in leaf_node.keyvalues.iter().enumerate() {
-                    threshold_value += kv.key.as_bytes().len() + kv.value.as_bytes().len() + 4;
+                    threshold_value += kv.key.len() + kv.value.len() + 4;
                     if threshold_value > DEFAULT_MIN_THRESHOLD as usize {
                         return idx as i32;
                     }
@@ -428,14 +432,14 @@ impl Node {
             TypedNode::Internal(ref internal_node) => {
                 let mut threshold_value = HEAD_INTERNAL_NODE_SIZE;
                 for idx in 0..internal_node.keys.len() {
-                    threshold_value += internal_node.keys[idx].as_bytes().len() + 2 + 8;
+                    threshold_value += internal_node.keys[idx].len() + 2 + 8;
                 }
                 threshold_value < DEFAULT_MIN_THRESHOLD as usize
             }
             TypedNode::Leaf(ref leaf_node) => {
                 let mut threshold_value = HEAD_LEAF_NODE_SIZE + 8;
                 for kv in leaf_node.keyvalues.iter() {
-                    threshold_value += kv.key.as_bytes().len() + kv.value.as_bytes().len() + 4;
+                    threshold_value += kv.key.len() + kv.value.len() + 4;
                 }
                 threshold_value < DEFAULT_MIN_THRESHOLD as usize
             }
@@ -452,7 +456,7 @@ impl Node {
                     /* if idx > DEFAULT_MAX_LEAF_ITEMS_NUM as usize {
                         return true;
                     } */
-                    threshold_value += internal_node.keys[idx].as_bytes().len() + 2 + 8;
+                    threshold_value += internal_node.keys[idx].len() + 2 + 8;
                 }
                 (threshold_value as f64) > DEFAULT_MAX_THRESHOLD
             }
@@ -462,7 +466,7 @@ impl Node {
                     /* if idx > DEFAULT_MAX_LEAF_ITEMS_NUM as usize{
                         return true;
                     } */
-                    threshold_value += kv.key.as_bytes().len() + kv.value.as_bytes().len() + 4;
+                    threshold_value += kv.key.len() + kv.value.len() + 4;
                 }
                 (threshold_value as f64) > DEFAULT_MAX_THRESHOLD
             }

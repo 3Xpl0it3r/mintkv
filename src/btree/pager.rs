@@ -2,7 +2,7 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::{u64, usize};
 
-use crate::constant::DEFAULT_PAGE_SIZE;
+use super::constant::DEFAULT_PAGE_SIZE;
 
 #[derive(Default, Debug)]
 pub struct Page {
