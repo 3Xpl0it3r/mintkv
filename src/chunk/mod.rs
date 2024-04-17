@@ -35,7 +35,7 @@ impl Chunk {
     // |  8B     |  2B      | .|  2B     |  2B   |x  |  2B     | x  |  ......   ....      |
     // |--------------------------------------------------------------|-------------------|
     pub(crate) fn serialize(self) -> (Vec<u8>, Vec<u8>) {
-        let mut buffer = vec![0u8; self.used_size * (2 + 2 + 2) + 8];
+        let mut buffer = vec![0u8; self.used_size * (8 + 2 + 2) + 8];
         let mut offset = 0;
         buffer[offset..offset + 8].clone_from_slice(self.key_nums.to_le_bytes().as_ref());
         offset += 8;
@@ -45,17 +45,17 @@ impl Chunk {
 
         let store_iter = self.store.into_iter();
         for (key, value) in store_iter {
-            buffer[ptr_pos..ptr_pos + 2].clone_from_slice(offset.to_le_bytes().as_ref());
-            ptr_pos += 2;
+            buffer[ptr_pos..ptr_pos + 8].clone_from_slice(offset.to_le_bytes().as_ref());
+            ptr_pos += 8;
 
-            buffer[offset..offset + 2].clone_from_slice(key.len().to_le_bytes().as_ref());
-            offset += 2;
+            buffer[offset..offset + 8].clone_from_slice(key.len().to_le_bytes().as_ref());
+            offset += 8;
 
             buffer[offset..offset + key.len()].clone_from_slice(&key);
             offset += key.len();
 
-            buffer[offset..offset + 2].clone_from_slice(value.len().to_le_bytes().as_ref());
-            offset += 2;
+            buffer[offset..offset + 8].clone_from_slice(value.len().to_le_bytes().as_ref());
+            offset += 8;
 
             buffer[offset..offset + value.len()].clone_from_slice(&value);
             offset += value.len();
@@ -63,8 +63,6 @@ impl Chunk {
 
         (self.first_key, buffer)
     }
-
-
 }
 
 // MemTable[#TODO] (should add some comments)

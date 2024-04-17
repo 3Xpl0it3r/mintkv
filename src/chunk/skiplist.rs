@@ -161,14 +161,23 @@ impl Iterator for IntoIterator {
     type Item = (Vec<u8>, Vec<u8>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(node) = self.0.head.borrow_mut().next_nodes[0].take() {
+        let drop = self.0.head.borrow_mut().next_nodes[0].take();
+        drop.as_ref()?;
+        let node = drop.unwrap();
+        let next = node.borrow_mut().next_nodes[0].take();
+        self.0.head.borrow_mut().next_nodes[0] = next;
+        /* let node = Rc::try_unwrap(node).unwrap().into_inner(); */
+        let key = node.borrow().key.clone();
+        let value = node.borrow().value.clone();
+        Some((key,value))
+        /* if let Some(node) = self.0.head.borrow_mut().next_nodes[0].take() {
             let next = node.borrow_mut().next_nodes[0].take();
             self.0.head.borrow_mut().next_nodes[0] = next;
             let node = Rc::try_unwrap(node).unwrap().into_inner();
             Some((node.key, node.value))
         } else {
             None
-        }
+        } */
     }
 }
 

@@ -64,4 +64,8 @@ impl MemTables {
         self.mutable = &mut self.warm_chunks[0];
         Ok(())
     }
+
+    pub(crate) fn expired_chunks(&mut self) -> Option<Chunk> {
+        self.cold_chunks.pop()
+    }
 }
