@@ -18,14 +18,16 @@ use meta::Meta;
 use node::{KeyValue, Node, TypedNode};
 use pager::Pager;
 
-pub struct BTree {
+// default max size is 40GB for a single tree
+
+pub(crate) struct BTree {
     pub pager: Rc<Pager>,
     pub metadata: Meta,
     pub freelist: Freelist,
 }
 
 impl BTree {
-    pub fn new(path: &str) -> Self {
+    pub(crate) fn new(path: &str) -> Self {
         let mut should_initial = false;
         let fp = match OpenOptions::new().write(true).read(true).open(path) {
             Ok(file_ptr) => file_ptr,

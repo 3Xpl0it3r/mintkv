@@ -17,3 +17,8 @@ impl Encoder {
         todo!()
     }
 }
+
+
+// Encoder output format
+// {indeices} {data}
+// indices 用来标记key offset方便binary search

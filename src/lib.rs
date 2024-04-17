@@ -1,11 +1,14 @@
 pub(crate) mod bytes;
+pub(crate) mod tombstone;
+pub(crate) mod block;
+pub(crate) mod btree;
+pub(crate) mod memtable;
+pub(crate) mod wal;
+pub(crate) mod chunk;
+pub(crate) mod util;
 
-pub mod block;
-pub mod btree;
-pub mod memtable;
 pub mod errors;
 pub mod db;
-pub mod wal;
 
 
 #[cfg(test)]

@@ -1,8 +1,38 @@
 # mintkv
 A simple KV database in rust is based on btree, written as a learning project.
 
+# File system layout
+```txt
+data
+|----blocks
+|      b_0000001
+          data
+          meta.json
+          index.json
+          tombstone
+|      b_0000002
+          data
+          meta.json
+          index.json
+          tombstone
+|-----memtables (mmap)
+|         m_0001
+             data 
+             tombstone
+
+```
+
+# TODO
+[*] B+tree as engine
+[*] Memtables
+[ ] LE128 Code
+[ ] Blocks(disk present)
+[ ] Wal
+[ ] tombstone
+[ ] compaction
 
 # Example
+
 ```rust
 use mintkv::Mintkv;
 use std::fs;

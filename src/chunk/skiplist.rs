@@ -4,8 +4,9 @@ use std::usize;
 
 use crate::bytes;
 use crate::errors::Error;
+use crate::util::Random;
 
-const MAX_SKIP_HEIGH: usize = 5;
+const MAX_SKIP_HEIGH: usize = 16;
 
 // SkipList[#TODO] (shoule add some comments )
 #[derive(Debug)]
@@ -35,7 +36,15 @@ pub struct Node {
 }
 
 fn get_random_height() -> i32 {
-    5
+    let mut height = 0;
+    for _ in 0..MAX_SKIP_HEIGH {
+        let rand_dome = Random::u32().unwrap();
+        let f_n = rand_dome as f64 / u32::MAX as f64;
+        if f_n < 0.5 {
+            height += 1;
+        }
+    }
+    height
 }
 
 // SkipList[#TODO] (should add some comments)
@@ -71,7 +80,7 @@ impl SkipList {
         Ok(())
     }
 
-    pub(super) fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
+    pub(super) fn delete(&mut self, key: &[u8]) -> Result<Vec<u8>, Error> {
         let (mut travels, may_found) = self.search(key);
         if may_found.is_none() {
             return Err(Error::KeyNotFound);
@@ -96,13 +105,15 @@ impl SkipList {
                 self.height -= 1;
             }
         }
-        Ok(())
+
+        let node = Rc::try_unwrap(may_found.unwrap()).unwrap().into_inner();
+        Ok(node.value)
     }
 
     pub(super) fn get(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
         let (_, may_found) = self.search(key);
         match may_found {
-            Some(found) => Ok(found.borrow().key.clone()),
+            Some(found) => Ok(found.borrow().value.clone()),
             None => Err(Error::KeyNotFound),
         }
     }
@@ -115,7 +126,7 @@ impl SkipList {
             loop {
                 let may_next = prev_node.borrow().next_nodes[level as usize].clone();
                 if let Some(node) = may_next.as_ref() {
-                    match bytes::compare(&node.borrow().key, key) {
+                    match bytes::compare(key, &node.borrow().key) {
                         std::cmp::Ordering::Less => break,
                         std::cmp::Ordering::Equal => {
                             next = Some(node.clone());
@@ -138,58 +149,102 @@ impl SkipList {
     }
 }
 
+pub(super) struct IntoIterator(SkipList);
+
+impl SkipList {
+    pub(super) fn into_iter(self) -> IntoIterator {
+        IntoIterator(self)
+    }
+}
+
+impl Iterator for IntoIterator {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.0.head.borrow_mut().next_nodes[0].take() {
+            let next = node.borrow_mut().next_nodes[0].take();
+            self.0.head.borrow_mut().next_nodes[0] = next;
+            let node = Rc::try_unwrap(node).unwrap().into_inner();
+            Some((node.key, node.value))
+        } else {
+            None
+        }
+    }
+}
+
+// Iter<'a>[#TODO] (shoule add some comments )
+pub(super) struct Iter {
+    next: Option<SkipNode>,
+}
+
+impl SkipList {
+    pub(super) fn iter(&self) -> Iter {
+        Iter {
+            next: self.head.borrow().next_nodes[0].clone(),
+        }
+    }
+}
+
+// Iterator[#TODO] (should add some comments)
+impl Iterator for Iter {
+    type Item = SkipNode;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next.take().map(|node| {
+            self.next = node.borrow().next_nodes[0].clone();
+            node
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_insert() {
-        let mut skip_list = SkipList::default();
-        assert_eq!(
-            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
-            Ok(())
-        );
-        assert_eq!(
-            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
-            Ok(())
-        );
-        assert_eq!(
-            skip_list.insert("key1".as_bytes(), "value3".as_bytes()),
-            Err(Error::KeyExists)
-        );
+    fn test_insert_and_get() {
+        let mut list = SkipList::default();
+        let key = vec![1, 2, 3];
+        let value = vec![4, 5, 6];
+
+        assert_eq!(list.get(&key), Err(Error::KeyNotFound));
+
+        list.insert(&key, &value).unwrap();
+
+        assert_eq!(list.get(&key), Ok(value));
     }
 
     #[test]
-    fn test_delete() {
-        let mut skip_list = SkipList::default();
-        assert_eq!(
-            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
-            Ok(())
-        );
-        assert_eq!(
-            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
-            Ok(())
-        );
-        assert_eq!(skip_list.delete("key2".as_bytes()), Ok(()));
-        assert_eq!(skip_list.delete("key2".as_bytes()), Err(Error::KeyNotFound));
-        assert_eq!(skip_list.delete("key3".as_bytes()), Err(Error::KeyNotFound));
+    fn test_insert_and_delete() {
+        let mut list = SkipList::default();
+        let key = vec![1, 2, 3];
+        let value = vec![4, 5, 6];
+
+        assert_eq!(list.delete(&key), Err(Error::KeyNotFound));
+
+        list.insert(&key, &value).unwrap();
+
+        assert_eq!(list.delete(&key), Ok(value));
+        assert_eq!(list.get(&key), Err(Error::KeyNotFound));
     }
 
     #[test]
-    fn test_search() {
-        let mut skip_list = SkipList::default();
-        assert_eq!(
-            skip_list.insert("key1".as_bytes(), "value1".as_bytes()),
-            Ok(())
-        );
-        assert_eq!(
-            skip_list.insert("key2".as_bytes(), "value2".as_bytes()),
-            Ok(())
-        );
-        let (_, maybe_found) = skip_list.search("key2".as_bytes());
-        assert_eq!(maybe_found.is_some(), true);
-        assert_eq!(maybe_found.unwrap().borrow().value, "value2".as_bytes());
-        let (_, maybe_not_found) = skip_list.search("key3".as_bytes());
-        assert_eq!(maybe_not_found.is_none(), true);
+    fn test_iterator() {
+        let mut list = SkipList::default();
+        let pairs = vec![(vec![1], vec![2]), (vec![3], vec![4]), (vec![5], vec![6])];
+
+        for (key, value) in &pairs {
+            list.insert(key, value).unwrap();
+        }
+
+        let mut iter = list.iter();
+
+        for (key, value) in pairs {
+            let node = iter.next().unwrap();
+            assert_eq!(node.borrow().key, key);
+            assert_eq!(node.borrow().value, value);
+        }
+
+        assert_eq!(iter.next(), None);
     }
 }
