@@ -22,7 +22,7 @@ impl Default for MemTables {
     fn default() -> Self {
         let mut memtables = MemTables {
             mutable: std::ptr::null_mut(),
-            warm_chunks: vec![Chunk::default()],
+            warm_chunks: vec![Chunk::new()],
             cold_chunks: vec![],
             warm_num: DEFAULT_WARM_CHUNKS_NUM,
         };
@@ -60,7 +60,7 @@ impl MemTables {
         if self.warm_chunks.len() == self.warm_num {
             self.cold_chunks.push(self.warm_chunks.pop().unwrap());
         }
-        self.warm_chunks.insert(0, Chunk::default());
+        self.warm_chunks.insert(0, Chunk::new());
         self.mutable = &mut self.warm_chunks[0];
         Ok(())
     }

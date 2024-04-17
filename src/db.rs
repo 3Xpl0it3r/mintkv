@@ -1,21 +1,21 @@
-use crate::block::{Blocks, Segment};
+use crate::block::Blocks;
 use crate::errors::Error;
 use crate::memtable::MemTables;
 
 // MintKv[#TODO] (shoule add some comments )
 pub struct MintKv {
-    data_root: &'static str,
+    _data_dir: String,
     memtables: MemTables,
     blocks: Blocks,
 }
 
-// Default[#TODO] (should add some comments)
-impl Default for MintKv {
-    fn default() -> Self {
+// MintKv[#TODO] (should add some comments)
+impl MintKv {
+    pub fn new(data_dir: &str) -> Self {
         Self {
-            data_root : "data",
+            _data_dir: data_dir.into(),
             memtables: MemTables::default(),
-            blocks: Blocks::initial("./data"),
+            blocks: Blocks::initial(data_dir),
         }
     }
 }

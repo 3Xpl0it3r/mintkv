@@ -169,7 +169,7 @@ impl Iterator for IntoIterator {
         /* let node = Rc::try_unwrap(node).unwrap().into_inner(); */
         let key = node.borrow().key.clone();
         let value = node.borrow().value.clone();
-        Some((key,value))
+        Some((key, value))
         /* if let Some(node) = self.0.head.borrow_mut().next_nodes[0].take() {
             let next = node.borrow_mut().next_nodes[0].take();
             self.0.head.borrow_mut().next_nodes[0] = next;

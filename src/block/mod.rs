@@ -3,12 +3,10 @@ mod encoder;
 
 // block is ask sstable
 
-use std::collections::HashMap;
-use std::fs::{self, read, File, OpenOptions};
-use std::io::{BufReader, ErrorKind, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::FileExt;
 use std::usize;
-
-use serde::{Deserialize, Serialize};
 
 use crate::btree::BTree;
 use crate::chunk::Chunk;
@@ -24,13 +22,22 @@ pub(crate) struct Blocks {
     data_dir: String,
     metadata: Meta,
     segment: Segment,
-    blocks: Vec<Segment>,
+    _blocks: Vec<Segment>,
+    metafile: File,
 }
 
 // BlocksMeta[#TODO] (shoule add some comments )
-#[derive(Serialize, Deserialize, Default, Clone, Copy)]
+#[derive(Debug)]
 struct Meta {
-    current_id: u32,
+    // the max blocked id
+    block_id: u64,
+}
+
+// Meta[#TODO] (should add some comments)
+impl Meta {
+    fn new() -> Self {
+        Self { block_id: 1 }
+    }
 }
 
 // Blocks[#TODO] (should add some comments)
@@ -38,37 +45,42 @@ impl Blocks {
     pub(crate) fn initial(root_dir: &str) -> Blocks {
         let block_dir = format!("{root_dir}/blocks");
         let block_meta = format!("{block_dir}/metadata.json");
-        let mut meta = match OpenOptions::new()
+        let mut metadata = Meta::new();
+        let meta_file = match OpenOptions::new()
             .write(true)
             .read(true)
             .open(block_meta.as_str())
         {
-            Ok(file_ptr) => {
-                let reader = BufReader::new(file_ptr);
-                serde_json::from_reader(reader).unwrap()
+            Ok(mut file_ptr) => {
+                let mut buffer = [0u8; 4096];
+                file_ptr.read_exact(&mut buffer).unwrap();
+                metadata.deserial(buffer.as_slice());
+                file_ptr
             }
             Err(err) => {
                 if err.kind() == ErrorKind::NotFound {
                     let _ = fs::create_dir_all(block_dir.clone());
-                    let mut meta_file =
+                    let meta_file =
                         File::create_new(block_meta.as_str()).expect("crate new database failed");
-                    let default_meta = Meta::default();
-                    let json = serde_json::to_string(&default_meta).unwrap();
-                    meta_file.write_all(json.as_bytes()).unwrap();
-                    drop(meta_file);
-                    default_meta
+                    let mut buffer = [0u8; 4096];
+                    metadata.serialize(&mut buffer);
+                    meta_file
+                        .write_at(&buffer, 0)
+                        .expect("Persistent Metadata Initial data failed");
+                    meta_file
                 } else {
                     panic!("open database failed");
                 }
             }
         };
 
-        meta.current_id += 1;
+        let segment = Segment::new(format!("{}/block-{}", block_dir, &metadata.block_id).as_str());
         Self {
             data_dir: block_dir.clone(),
-            metadata: meta,
-            segment: Segment::new(format!("{}/block-{}", block_dir, meta.current_id).as_str()),
-            blocks: Vec::new(),
+            metadata,
+            metafile: meta_file,
+            segment,
+            _blocks: Vec::new(),
         }
     }
 
@@ -81,9 +93,10 @@ impl Blocks {
     }
 
     fn roate(&mut self) {
-        self.metadata.current_id += 1;
+        self.metadata.block_id += 1;
         self.segment =
-            Segment::new(format!("{}/block-{}", self.data_dir, self.metadata.current_id).as_str());
+            Segment::new(format!("{}/block-{}", self.data_dir, self.metadata.block_id).as_str());
+        self.write_metadata();
     }
 
     pub(crate) fn remove(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
@@ -92,6 +105,15 @@ impl Blocks {
 
     pub(crate) fn get(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
         Err(Error::KeyNotFound)
+    }
+
+    #[inline]
+    fn write_metadata(&self) {
+        let mut buffer = [0u8; 4096];
+        self.metadata.serialize(&mut buffer);
+        self.metafile
+            .write_at(&buffer, 0)
+            .expect("Persistent Metadata Initial data failed");
     }
 }
 
@@ -117,5 +139,22 @@ impl Segment {
     fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.btree.insert(&key, &value);
         self.used_size += key.len() + value.len();
+    }
+}
+
+// Meta[#TODO] (should add some comments)
+impl Meta {
+    fn serialize(&self, buffer: &mut [u8]) {
+        let mut offset = 0;
+
+        buffer[offset..offset + 8].clone_from_slice(self.block_id.to_le_bytes().as_ref());
+        offset += 8;
+    }
+
+    fn deserial(&mut self, buffer: &[u8]) {
+        let mut offset = 0;
+
+        let current_id = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
+        offset += 8;
     }
 }

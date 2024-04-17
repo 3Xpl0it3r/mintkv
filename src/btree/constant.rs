@@ -11,7 +11,7 @@ pub const HEAD_LEAF_NODE_SIZE: usize = 1 + 8 + 8 + 8;
 // 8B for child count
 pub const HEAD_INTERNAL_NODE_SIZE: usize = 1 + 8 + 8;
 
-pub const DEFAULT_PAGE_SIZE: usize = 1024 * 1024 * 10;
+pub const DEFAULT_PAGE_SIZE: usize = 1024 * 1024;
 
 pub const DEFAULT_META_PN: u64 = 0;
 /* pub const DEFAULT_FREELIST_PN: u64 = 1; */
