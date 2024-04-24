@@ -1,11 +1,12 @@
-pub(crate) mod bytes;
-pub(crate) mod tombstone;
-pub(crate) mod block;
-pub(crate) mod btree;
-pub(crate) mod memtable;
-pub(crate) mod wal;
-pub(crate) mod chunk;
-pub(crate) mod util;
+mod tombstone;
+mod block;
+mod btree;
+mod memtable;
+mod wal;
+mod chunk;
+mod util;
+mod checkpoint;
+mod bytes;
 
 pub mod errors;
 pub mod db;
@@ -13,7 +14,6 @@ pub mod db;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn it_works() {}

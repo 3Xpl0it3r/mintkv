@@ -1,16 +1,27 @@
 use mintkv::db::MintKv;
-const TEST_COUNT: i32 = 1000;
-
+const TEST_COUNT: u64 = 1000;
 fn main() {
+    write_main();
+}
+
+
+fn write_main() {
     let mut db = MintKv::new("./data");
     for i in 0..TEST_COUNT {
-        let (key, value) = (format!("key-{}", i), format!("value-{}", i));
-        db.insert(&key, &value).unwrap();
+        let value = format!("value-{}", i);
+        db.insert(i, value.as_bytes())
+            .unwrap()
     }
+    db.commit();
 
     for i in 0..TEST_COUNT {
-        let key = format!("key-{}", i);
-        let result = db.get(&key);
-        println!("Search For: {}, Reesult: {:?}", key, result);
+        let result = db.get(i);
+        println!("Search {:?}, Result: {:?}", i, result);
     }
+}
+
+fn read_main() {
+    /* let db = MintKv::new("./data");
+    let result = db.get(&bytes::Varint::encode_u64(23));
+    println!("Search {:?}", result); */
 }

@@ -2,3 +2,9 @@
 name = "mintkv"
 version = "0.1.0"
 edition = "2021"
+author = ["3Xpl0it3r"]
+description = "A simple kv library based on btree"
+license = "Apache-2.0"
+
+[dependencies]
+memmap2 = "0.9.4"

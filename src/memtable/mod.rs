@@ -3,7 +3,6 @@ mod encoder;
 
 use crate::chunk::Chunk;
 use crate::errors::Error;
-use std::usize;
 
 pub struct MemTables {
     // in memory ,read && writable
@@ -47,9 +46,8 @@ impl MemTables {
     }
 
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let size = key.len() + value.len();
         unsafe {
-            if (*self.mutable).is_overflowed(size) {
+            if (*self.mutable).is_overflowed(key, value) {
                 let _ = self.rotate();
             }
             (*self.mutable).insert(key, value)

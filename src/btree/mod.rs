@@ -1,9 +1,9 @@
-mod constant;
-mod error;
-mod freelist;
-mod meta;
-mod node;
-mod pager;
+pub mod constant;
+pub mod error;
+pub mod freelist;
+pub mod meta;
+pub mod node;
+pub mod pager;
 
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
@@ -18,16 +18,38 @@ use meta::Meta;
 use node::{KeyValue, Node, TypedNode};
 use pager::Pager;
 
+
 // default max size is 40GB for a single tree
 
-pub(crate) struct BTree {
+pub struct BTree {
     pub pager: Rc<Pager>,
     pub metadata: Meta,
     pub freelist: Freelist,
+    read_only: bool,
 }
 
 impl BTree {
-    pub(crate) fn new(path: &str) -> Self {
+    pub fn reader(path: &str) -> Self {
+        let fp = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .expect("open Btree failed");
+        let pager = Pager::new(fp);
+        let mut metadata = Meta::default();
+        let mut freelist = Freelist::default();
+        let mta_page = pager.read_page(DEFAULT_META_PN).unwrap();
+        metadata.deserialize(&mta_page.data);
+
+        let fls_page = pager.read_page(metadata.freelist_page).unwrap();
+        freelist.deserialize(&fls_page.data);
+        BTree {
+            pager: Rc::new(pager),
+            metadata,
+            freelist,
+            read_only: true,
+        }
+    }
+    pub fn new(path: &str) -> Self {
         let mut should_initial = false;
         let fp = match OpenOptions::new().write(true).read(true).open(path) {
             Ok(file_ptr) => file_ptr,
@@ -62,6 +84,7 @@ impl BTree {
             pager: Rc::new(pager),
             metadata,
             freelist,
+            read_only: false,
         }
     }
 
@@ -469,6 +492,24 @@ impl BTree {
         nodes
     }
 
+    pub fn fuzz_find(&self, key: &[u8]) -> Result<KeyValue, Error> {
+        if self.metadata.root == 0 {
+            return Err(Error::EmptyTree);
+        }
+
+        let mut ancestors = vec![];
+        if let Ok((node, index, found)) = self.find_node(self.metadata.root, key, &mut ancestors) {
+            if !found && index == 0 {
+                return Err(Error::KeyNotFound);
+            }
+            if let TypedNode::Leaf(ref leaf_node) = node.data {
+                let index = if found { index } else { index - 1 };
+                return Ok(leaf_node.keyvalues[index].clone());
+            }
+        }
+        Err(Error::KeyNotFound)
+    }
+
     pub fn find(&self, key: &[u8]) -> Result<KeyValue, Error> {
         if self.metadata.root == 0 {
             return Err(Error::EmptyTree);
@@ -538,10 +579,23 @@ impl BTree {
         }
         self.freelist.release_page(node);
     }
+
+    pub fn flush(&mut self) {
+        let mut meta_page = self.pager.allocate_page(DEFAULT_META_PN);
+        self.metadata.serialize(&mut meta_page.data);
+        self.pager.write_page(&meta_page);
+
+        let mut fls_page = self.pager.allocate_page(self.metadata.freelist_page);
+        self.freelist.serialize(&mut fls_page.data);
+        self.pager.write_page(&fls_page);
+    }
 }
 
 impl Drop for BTree {
     fn drop(&mut self) {
+        if self.read_only {
+            return;
+        }
         let mut meta_page = self.pager.allocate_page(DEFAULT_META_PN);
         self.metadata.serialize(&mut meta_page.data);
         self.pager.write_page(&meta_page);

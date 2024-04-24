@@ -106,11 +106,12 @@ impl Node {
                 );
             }
             TypedNode::Leaf(ref leaf_node) => {
-                /* let mut keys = vec![];
+                let mut keys = vec![];
                 for kv in leaf_node.keyvalues.iter() {
-                    keys.push(kv.key.to_string());
+                    let key = bytes::Varint::read_u64(&kv.key).1;
+                    keys.push(key);
                 }
-                println!("LN:{}, Keys: {:?}", self.offset, keys); */
+                println!("LN:{}, Keys: {:?}", self.offset, keys);
             }
             TypedNode::Empty => todo!(),
         }
@@ -381,7 +382,7 @@ impl Node {
         if let TypedNode::Internal(ref internal_node) = self.data {
             for (idx, elem) in internal_node.keys.iter().enumerate() {
                 /* match elem.as_str().cmp(key) { */
-                match bytes::compare(&elem, key) {
+                match bytes::compare(elem, key) {
                     std::cmp::Ordering::Equal => {
                         return (idx + 1, internal_node.children[idx + 1]);
                     }

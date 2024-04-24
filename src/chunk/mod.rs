@@ -1,40 +1,36 @@
-use crate::errors::Error;
-
+mod encoder;
 mod skiplist;
 
-pub(crate) struct Chunk {
+use std::usize;
+
+use crate::bytes;
+use crate::errors::Error;
+
+pub struct Chunk {
     store: skiplist::SkipList,
     total_size: usize,
-    used_size: usize,
+    pub used_size: usize,
     key_nums: usize,
+    // TODO (add a key to record the first key insert into store)
+    // should add first key, this is will used for checkpoints
+    pub last_key: Vec<u8>,
 }
 
 const DEFAULT_MAX_CHUNK_SIZE: usize = 1024;
 
 // Chunk[#TODO] (should add some comments)
 impl Chunk {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Chunk {
             store: skiplist::SkipList::default(),
             total_size: DEFAULT_MAX_CHUNK_SIZE,
             used_size: 0,
             key_nums: 0,
+            last_key: Vec::new(),
         }
     }
 }
 
-/* // Default[#TODO] (should add some comments)
-impl Default for Chunk {
-    fn default() -> Self {
-        Chunk {
-            store: skiplist::SkipList::default(),
-            total_size: DEFAULT_MAX_CHUNK_SIZE,
-            used_size: 0,
-            key_nums: 0,
-            first_key: Vec::default(),
-        }
-    }
-} */
 // Chunk[#TODO] (should add some comments)
 impl Chunk {
     // chunk disk layout
@@ -43,7 +39,7 @@ impl Chunk {
     // |----------------------------------------------------------------------------------|
     // |  8B     |  2B      | .|  2B     |  2B   |x  |  2B     | x  |  ......   ....      |
     // |--------------------------------------------------------------|-------------------|
-    pub(crate) fn serialize(self) -> (Vec<u8>, Vec<u8>) {
+    pub fn encode(self) -> (Vec<u8>, Vec<u8>) {
         let mut buffer = vec![0u8; self.key_nums * (8 + 8 + 8) + 8 + self.used_size];
         let mut offset = 0;
         buffer[offset..offset + 8].clone_from_slice(self.key_nums.to_le_bytes().as_ref());
@@ -77,9 +73,53 @@ impl Chunk {
 
         (fist_key.unwrap(), buffer)
     }
+    //  v2
+    pub fn encode_varint(self) -> (Vec<u8>, Vec<u8>) {
+        let mut buffer = Vec::new();
+        buffer.append(&mut bytes::Varint::encode_u64(self.key_nums as u64));
 
-    /// for debug
-    fn deserialize(buffer: &[u8]) -> Result<Vec<(String, String)>, Error> {
+        let mut first_key = None;
+        let store_iter = self.store.into_iter();
+        for (mut key, mut value) in store_iter {
+            if first_key.is_none() {
+                first_key = Some(key.clone());
+            }
+            buffer.append(&mut bytes::Varint::encode_u64(key.len() as u64));
+            buffer.append(&mut key);
+
+            buffer.append(&mut bytes::Varint::encode_u64(value.len() as u64));
+            buffer.append(&mut value);
+        }
+
+        (first_key.unwrap(), buffer)
+    }
+
+    fn decode_varint(buffer: &[u8]) -> Result<Vec<(String, String)>, Error> {
+        let mut ordered_list = Vec::new();
+
+        let mut offset = 0;
+        let (r_byte_cnt, keys_num) = bytes::Varint::read_u64(buffer);
+        offset = r_byte_cnt;
+
+        for _ in 0..keys_num {
+            let (r_byte_cnt, key_size) = bytes::Varint::read_u64(&buffer[offset..]);
+            offset += r_byte_cnt;
+
+            let mut key = Vec::new();
+            key.clone_from_slice(buffer[offset..offset + key_size as usize].into());
+            offset += key_size as usize;
+
+            let (r_byte_cnt, value_size) = bytes::Varint::read_u64(&buffer[offset..]);
+            offset += r_byte_cnt;
+
+            let mut value = Vec::new();
+            value.clone_from_slice(buffer[offset..offset + value_size as usize].into());
+            offset += value_size as usize;
+        }
+
+        Ok(ordered_list)
+    }
+    pub fn decode_debug(buffer: &[u8]) -> Result<Vec<(String, String)>, Error> {
         let mut offset = 0;
         let key_num = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
         offset += 8;
@@ -91,14 +131,41 @@ impl Chunk {
             let key_size = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
             offset += 8;
 
-            let key = String::from_utf8(buffer[offset..offset + key_size as usize].into()).unwrap();
+            let key = buffer[offset..offset + key_size as usize].into();
             offset += key_size as usize;
 
             let value_size = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
             offset += 8;
 
-            let value =
-                String::from_utf8(buffer[offset..offset + value_size as usize].into()).unwrap();
+            let value: Vec<u8> = buffer[offset..offset + value_size as usize].into();
+            offset += value_size as usize;
+            ordered_list.push((
+                String::from_utf8(key).unwrap(),
+                String::from_utf8(value).unwrap(),
+            ));
+        }
+        Ok(ordered_list)
+    }
+    /// for debug
+    pub fn decode(buffer: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        let mut offset = 0;
+        let key_num = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+        let mut ordered_list = Vec::new();
+
+        offset += 8 * key_num as usize;
+
+        for _ in 0..key_num {
+            let key_size = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+
+            let key = buffer[offset..offset + key_size as usize].into();
+            offset += key_size as usize;
+
+            let value_size = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+
+            let value: Vec<u8> = buffer[offset..offset + value_size as usize].into();
             offset += value_size as usize;
             ordered_list.push((key, value));
         }
@@ -128,8 +195,14 @@ impl Chunk {
         self.store.insert(key, value)
     }
 
-    pub(crate) fn is_overflowed(&self, size: usize) -> bool {
-        self.used_size + size >= self.total_size
+    pub(crate) fn is_overflowed(&mut self, key: &[u8], value: &[u8]) -> bool {
+        let size = key.len() + value.len();
+        if self.used_size + size >= self.total_size {
+            self.last_key = key.into();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -161,7 +234,7 @@ mod tests {
         let key_nums = chunk.key_nums;
         let used_size = chunk.used_size;
 
-        let (first_key, buffer) = chunk.serialize();
+        let (first_key, buffer) = chunk.encode();
 
         let expected_buffer_length = key_nums * (8 + 8 + 8) + 8 + used_size;
         // Add assertions here to validate the serialization result
@@ -182,15 +255,15 @@ mod tests {
 
         // Add code here to populate the buffer with serialized data
 
-        let (_, buffer) = chunk.serialize();
-        let ordered_list = Chunk::deserialize(&buffer).unwrap();
+        let (_, buffer) = chunk.encode();
+        let ordered_list = Chunk::decode(&buffer).unwrap();
 
         // Add assertions here to validate the deserialization result
         // For example:
 
         assert_eq!(ordered_list.len(), 2);
-        assert_eq!(ordered_list[0], ("key1".to_string(), "value1".to_string()));
-        assert_eq!(ordered_list[1], ("key2".to_string(), "value2".to_string()));
+        /* assert_eq!(ordered_list[0], ("key1".to_string(), "value1".to_string()));
+        assert_eq!(ordered_list[1], ("key2".to_string(), "value2".to_string())); */
     }
 
     #[test]

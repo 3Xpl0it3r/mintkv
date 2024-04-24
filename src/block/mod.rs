@@ -1,4 +1,5 @@
 mod encoder;
+mod meta;
 /* mod varint; */
 
 // block is ask sstable
@@ -6,9 +7,10 @@ mod encoder;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::FileExt;
-use std::usize;
+use std::{u8, usize};
 
 use crate::btree::BTree;
+use crate::bytes;
 use crate::chunk::Chunk;
 use crate::errors::Error;
 
@@ -20,32 +22,17 @@ use crate::errors::Error;
 
 pub(crate) struct Blocks {
     data_dir: String,
-    metadata: Meta,
-    segment: Segment,
-    _blocks: Vec<Segment>,
+    metadata: meta::Metadata,
+    segment: Option<Segment>,
     metafile: File,
-}
-
-// BlocksMeta[#TODO] (shoule add some comments )
-#[derive(Debug)]
-struct Meta {
-    // the max blocked id
-    block_id: u64,
-}
-
-// Meta[#TODO] (should add some comments)
-impl Meta {
-    fn new() -> Self {
-        Self { block_id: 1 }
-    }
 }
 
 // Blocks[#TODO] (should add some comments)
 impl Blocks {
-    pub(crate) fn initial(root_dir: &str) -> Blocks {
+    pub(crate) fn open_or_create(root_dir: &str) -> Blocks {
         let block_dir = format!("{root_dir}/blocks");
         let block_meta = format!("{block_dir}/metadata.json");
-        let mut metadata = Meta::new();
+        let mut metadata = meta::Metadata::new();
         let meta_file = match OpenOptions::new()
             .write(true)
             .read(true)
@@ -74,37 +61,57 @@ impl Blocks {
             }
         };
 
-        let segment = Segment::new(format!("{}/block-{}", block_dir, &metadata.block_id).as_str());
         Self {
             data_dir: block_dir.clone(),
             metadata,
             metafile: meta_file,
-            segment,
-            _blocks: Vec::new(),
+            segment: None,
         }
     }
 
     pub(crate) fn write_block(&mut self, chunk: Chunk) {
-        let (key, value) = chunk.serialize();
-        if self.segment.used_size + key.len() + value.len() > self.segment.max_segment_size {
-            self.roate();
+        let (key, value) = chunk.encode();
+        if self.segment.is_none()
+            || self
+                .segment
+                .as_ref()
+                .unwrap()
+                .is_overflow(key.len() + value.len())
+        {
+            self.rotate(&key);
         }
-        self.segment.insert(key, value);
+        self.segment.as_mut().unwrap().insert(key.clone(), value)
     }
 
-    fn roate(&mut self) {
-        self.metadata.block_id += 1;
-        self.segment =
-            Segment::new(format!("{}/block-{}", self.data_dir, self.metadata.block_id).as_str());
+    fn rotate(&mut self, key: &[u8]) {
+        let new_sg_file = format!("{}/block-{}", self.data_dir, self.metadata.next_block_id);
+        self.metadata.next_block_id += 1;
+        let new_segment = Some(Segment::new(new_sg_file.as_str()));
+        // drop previous segment
+        let _ = self.segment.take();
+        self.segment = new_segment;
+        self.metadata.insert(key, new_sg_file.as_bytes());
         self.write_metadata();
     }
 
-    pub(crate) fn remove(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn remove(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
         Err(Error::KeyNotFound)
     }
 
-    pub(crate) fn get(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
-        Err(Error::KeyNotFound)
+    pub fn get(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some((_, seg_file)) = self.metadata.get(key) {
+            let path = String::from_utf8(seg_file).unwrap();
+            let segment = Segment::reader(path.as_str());
+            segment.search(key)
+        } else {
+            Err(Error::KeyNotFound)
+        }
+    }
+
+    pub fn flush(&mut self) {
+        if let Some(ref mut segment) = self.segment {
+            segment.flush();
+        }
     }
 
     #[inline]
@@ -119,6 +126,7 @@ impl Blocks {
 
 // Block[#TODO] (shoule add some comments )
 pub(crate) struct Segment {
+    file_name: String,
     btree: BTree,
     used_size: usize,
     max_segment_size: usize,
@@ -127,12 +135,22 @@ pub(crate) struct Segment {
 
 // Segment[#TODO] (should add some comments)
 impl Segment {
+    fn reader(path: &str) -> Self {
+        Segment {
+            btree: BTree::reader(path),
+            max_segment_size: 4096,
+            used_size: 0,
+            id: 0,
+            file_name: path.into(),
+        }
+    }
     fn new(path: &str) -> Self {
         Segment {
             btree: BTree::new(path),
             max_segment_size: 4096 * 10,
             used_size: 0,
             id: 0,
+            file_name: path.into(),
         }
     }
 
@@ -140,21 +158,29 @@ impl Segment {
         self.btree.insert(&key, &value);
         self.used_size += key.len() + value.len();
     }
-}
 
-// Meta[#TODO] (should add some comments)
-impl Meta {
-    fn serialize(&self, buffer: &mut [u8]) {
-        let mut offset = 0;
+    fn search(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Ok(may_found_stable) = self.btree.fuzz_find(key) {
 
-        buffer[offset..offset + 8].clone_from_slice(self.block_id.to_le_bytes().as_ref());
-        offset += 8;
+            let chunks = Chunk::decode(&may_found_stable.value).unwrap();
+
+            for item in chunks.into_iter() {
+                if bytes::compare(item.0.as_ref(), key) == std::cmp::Ordering::Equal {
+                    return Ok(item.1);
+                }
+            }
+            Err(Error::KeyNotFound)
+        } else {
+            Err(Error::KeyNotFound)
+        }
     }
 
-    fn deserial(&mut self, buffer: &[u8]) {
-        let mut offset = 0;
+    fn is_overflow(&self, size: usize) -> bool {
+        self.used_size + size > self.max_segment_size
+    }
 
-        let current_id = u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap());
-        offset += 8;
+    fn flush(&mut self) {
+        self.btree.flush();
     }
 }
+// Drop[#TODO] (should add some comments)
