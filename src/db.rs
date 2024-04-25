@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use std::{fs, usize};
 
 use crate::block::Blocks;
-use crate::bytes;
+use crate::bytes::{self, VarintCodec};
 use crate::checkpoint::CheckPoint;
 use crate::errors::Error;
 use crate::memtable::MemTables;
@@ -74,7 +74,7 @@ impl MintKv {
 /// Get / Delete / Get
 impl MintKv {
     pub fn get(&self, key: u64) -> Result<String, Error> {
-        let key = bytes::Varint::encode_u64(key);
+        let key = key.varint_encode();
         if let Ok(result) = self.memtables.get(&key) {
             return Ok(String::from_utf8(result).unwrap());
         }
@@ -86,7 +86,7 @@ impl MintKv {
     }
 
     pub fn insert(&mut self, key: u64, value: &[u8]) -> Result<(), Error> {
-        let key = bytes::Varint::encode_u64(key);
+        let key = key.varint_encode();
         self.wal_mg.record(&key, value);
         self.flush_memtable().unwrap();
         self.memtables.insert(&key, value)
@@ -94,7 +94,7 @@ impl MintKv {
 
     pub fn delete(&mut self, key: u64) -> Result<String, Error> {
         // first delete from memtables
-        let key = bytes::Varint::encode_u64(key);
+        let key = key.varint_encode();
         if let Ok(result) = self.memtables.delete(&key) {
             return Ok(String::from_utf8(result).unwrap());
         }
@@ -113,7 +113,7 @@ impl MintKv {
 impl MintKv {
     fn flush_memtable(&mut self) -> Result<(), Error> {
         while let Some(chunk) = self.memtables.expired_chunks() {
-            let key = bytes::Varint::read_u64(&chunk.last_key);
+            let key = u64::varint_decode(&chunk.last_key);
             self.check_point.record(key.1);
             self.blocks.write_block(chunk);
         }
@@ -129,7 +129,7 @@ impl MintKv {
             if kv_item.0.is_empty() {
                 continue;
             }
-            let key = bytes::Varint::read_u64(&kv_item.0).1;
+            let key = u64::varint_decode(&kv_item.0).1;
             if key < self.check_point.last_key {
                 continue;
             }

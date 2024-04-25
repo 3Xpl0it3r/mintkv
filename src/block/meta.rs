@@ -1,4 +1,4 @@
-use crate::bytes::{self, Varint};
+use crate::bytes::{self, VarintCodec};
 use std::usize;
 
 // BlocksMeta[#TODO] (shoule add some comments )
@@ -89,8 +89,8 @@ impl Metadata {
     pub(super) fn insert(&mut self, key: &[u8], value: &[u8]) {
         let mut insert_index = 0;
         let mut debug = Vec::new();
-        for (idx, elem) in self.indices.iter().enumerate() {
-            debug.push(Varint::read_u64(&elem.0).1);
+        for (_, elem) in self.indices.iter().enumerate() {
+            debug.push(u64::varint_decode(&elem.0).1);
         }
         let mut found = false;
         for (idx, elem) in self.indices.iter().enumerate() {

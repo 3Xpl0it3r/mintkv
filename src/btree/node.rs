@@ -1,7 +1,7 @@
 use core::panic;
 use std::usize;
 
-use crate::bytes;
+use crate::bytes::{self, VarintCodec};
 
 use super::constant::{
     DEFAULT_MAX_THRESHOLD, DEFAULT_MIN_THRESHOLD, HEAD_INTERNAL_NODE_SIZE, HEAD_LEAF_NODE_SIZE,
@@ -108,7 +108,7 @@ impl Node {
             TypedNode::Leaf(ref leaf_node) => {
                 let mut keys = vec![];
                 for kv in leaf_node.keyvalues.iter() {
-                    let key = bytes::Varint::read_u64(&kv.key).1;
+                    let key = u64::varint_decode(&kv.key).1;
                     keys.push(key);
                 }
                 println!("LN:{}, Keys: {:?}", self.offset, keys);

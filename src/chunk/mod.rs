@@ -3,7 +3,7 @@ mod skiplist;
 
 use std::usize;
 
-use crate::bytes;
+use crate::bytes::{self, VarintCodec};
 use crate::errors::Error;
 
 pub struct Chunk {
@@ -76,7 +76,7 @@ impl Chunk {
     //  v2
     pub fn encode_varint(self) -> (Vec<u8>, Vec<u8>) {
         let mut buffer = Vec::new();
-        buffer.append(&mut bytes::Varint::encode_u64(self.key_nums as u64));
+        buffer.append(&mut (self.key_nums as u64).varint_encode());
 
         let mut first_key = None;
         let store_iter = self.store.into_iter();
@@ -84,10 +84,10 @@ impl Chunk {
             if first_key.is_none() {
                 first_key = Some(key.clone());
             }
-            buffer.append(&mut bytes::Varint::encode_u64(key.len() as u64));
+            buffer.append(&mut key.len().varint_encode());
             buffer.append(&mut key);
 
-            buffer.append(&mut bytes::Varint::encode_u64(value.len() as u64));
+            buffer.append(&mut value.len().varint_encode());
             buffer.append(&mut value);
         }
 
@@ -98,18 +98,18 @@ impl Chunk {
         let mut ordered_list = Vec::new();
 
         let mut offset = 0;
-        let (r_byte_cnt, keys_num) = bytes::Varint::read_u64(buffer);
+        let (r_byte_cnt, keys_num) = u64::varint_decode(buffer);
         offset = r_byte_cnt;
 
         for _ in 0..keys_num {
-            let (r_byte_cnt, key_size) = bytes::Varint::read_u64(&buffer[offset..]);
+            let (r_byte_cnt, key_size) = u64::varint_decode(&buffer[offset..]);
             offset += r_byte_cnt;
 
             let mut key = Vec::new();
             key.clone_from_slice(buffer[offset..offset + key_size as usize].into());
             offset += key_size as usize;
 
-            let (r_byte_cnt, value_size) = bytes::Varint::read_u64(&buffer[offset..]);
+            let (r_byte_cnt, value_size) = u64::varint_decode(&buffer[offset..]);
             offset += r_byte_cnt;
 
             let mut value = Vec::new();
